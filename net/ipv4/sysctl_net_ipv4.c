@@ -330,148 +330,6 @@ bad_key:
 	return ret;
 }
 
-#ifdef CONFIG_NETPM
-#define TCP_NETPM_IFNAME_MAX	23
-#define TCP_NETPM_IFDEVS_MAX	64
-
-static int proc_netpm_ifdevs(struct ctl_table *ctl, int write,
-			     void __user *buffer, size_t *lenp,
-			     loff_t *ppos)
-{
-	size_t offs = 0;
-	char ifname[TCP_NETPM_IFNAME_MAX + 1];
-	char *strbuf = NULL;
-	struct net_device *dev;
-	struct ctl_table tbl = { .maxlen = ((TCP_NETPM_IFNAME_MAX + 1) * TCP_NETPM_IFDEVS_MAX) };
-	int ret = 0;
-
-	if (!write) {
-		char *dev_list;
-		int len = tbl.maxlen, used;
-
-		tbl.data = kzalloc(tbl.maxlen, GFP_KERNEL);
-		if (!tbl.data)
-			return -ENOMEM;
-		dev_list = (char *)tbl.data;
-
-		rcu_read_lock();
-		for_each_netdev_rcu(&init_net, dev) {
-			if (dev && dev->netpm_use) {
-				used = snprintf(dev_list, len, "%s ", dev->name);
-				dev_list += used;
-				len -= used;
-			}
-		}
-		rcu_read_unlock();
-
-		ret = proc_dostring(&tbl, write, buffer, lenp, ppos);
-
-		kfree(tbl.data);
-		return ret;
-	}
-
-	if (*lenp > tbl.maxlen || *lenp < 1) {
-		pr_info("%s: netpm: lenp=%lu\n", __func__, *lenp);
-		return -EINVAL;
-	}
-
-	strbuf = kzalloc(*lenp + 1, GFP_USER);
-	if (!strbuf)
-		return -ENOMEM;
-
-	if (copy_from_user(strbuf, buffer, *lenp)) {
-		kfree(strbuf);
-		return -EFAULT;
-	}
-
-	/* clear netpm use */
-	rcu_read_lock();
-	for_each_netdev_rcu(&init_net, dev) {
-		if (dev)
-			dev->netpm_use = 0;
-	}
-	rcu_read_unlock();
-
-	while (offs < *lenp && sscanf(strbuf + offs, "%23s", ifname) > 0) {
-		struct net_device *dev;
-		int len = strlen(ifname);
-
-		if (!len)
-			break;
-
-		rcu_read_lock();
-		dev = dev_get_by_name_rcu(&init_net, ifname);
-		if (dev) {
-			dev->netpm_use = 1;
-			pr_info("%s: netpm: ifdev %s added\n", __func__, ifname);
-		}
-		rcu_read_unlock();
-
-		offs += len;
-		while (offs < *lenp && ((char *)strbuf)[offs] == ' ')
-			offs++;
-	}
-
-	kfree(strbuf);
-	return 0;
-}
-#endif
-
-static void proc_configure_early_demux(int enabled, int protocol)
-{
-	struct net_protocol *ipprot;
-#if IS_ENABLED(CONFIG_IPV6)
-	struct inet6_protocol *ip6prot;
-#endif
-
-	rcu_read_lock();
-
-	ipprot = rcu_dereference(inet_protos[protocol]);
-	if (ipprot)
-		ipprot->early_demux = enabled ? ipprot->early_demux_handler :
-						NULL;
-
-#if IS_ENABLED(CONFIG_IPV6)
-	ip6prot = rcu_dereference(inet6_protos[protocol]);
-	if (ip6prot)
-		ip6prot->early_demux = enabled ? ip6prot->early_demux_handler :
-						 NULL;
-#endif
-	rcu_read_unlock();
-}
-
-static int proc_tcp_early_demux(struct ctl_table *table, int write,
-				void __user *buffer, size_t *lenp, loff_t *ppos)
-{
-	int ret = 0;
-
-	ret = proc_dointvec(table, write, buffer, lenp, ppos);
-
-	if (write && !ret) {
-		int enabled = init_net.ipv4.sysctl_tcp_early_demux;
-
-		proc_configure_early_demux(enabled, IPPROTO_TCP);
-	}
-
-	return ret;
-}
-
-static int proc_udp_early_demux(struct ctl_table *table, int write,
-				void __user *buffer, size_t *lenp, loff_t *ppos)
-{
-	int ret = 0;
-
-	ret = proc_dointvec(table, write, buffer, lenp, ppos);
-
-	if (write && !ret) {
-		int enabled = init_net.ipv4.sysctl_udp_early_demux;
-
-		proc_configure_early_demux(enabled, IPPROTO_UDP);
-	}
-
-	return ret;
-}
-
 static int proc_tfo_blackhole_detect_timeout(struct ctl_table *table,
 					     int write,
 					     void __user *buffer,
@@ -735,12 +593,6 @@ static struct ctl_table ipv4_table[] = {
 		.mode		= 0644,
 		.proc_handler	= proc_dointvec
 	},
-	{
-		.procname	= "tcp_netpm_ifdevs",
-		.maxlen		= ((TCP_NETPM_IFNAME_MAX + 1) * TCP_NETPM_IFDEVS_MAX),
-		.mode		= 0644,
-		.proc_handler	= proc_netpm_ifdevs
-	},
 #endif
 #ifdef CONFIG_NETLABEL
 	{
@@ -999,14 +851,14 @@ static struct ctl_table ipv4_net_table[] = {
 		.data           = &init_net.ipv4.sysctl_udp_early_demux,
 		.maxlen         = sizeof(int),
 		.mode           = 0644,
-		.proc_handler   = proc_udp_early_demux
+		.proc_handler   = proc_douintvec,
 	},
 	{
 		.procname       = "tcp_early_demux",
 		.data           = &init_net.ipv4.sysctl_tcp_early_demux,
 		.maxlen         = sizeof(int),
 		.mode           = 0644,
-		.proc_handler   = proc_tcp_early_demux
+		.proc_handler   = proc_douintvec,
 	},
 	{
 		.procname	= "ip_default_ttl",
